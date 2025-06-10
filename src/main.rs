@@ -58,12 +58,19 @@ pub struct QuoteResponse {
     pub quotes: Vec<Quote>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Properties)]
 pub struct Quote {
     pub author: Author,
     pub id: i32,
     pub quote: String,
     pub related_tags: Vec<Option<Tag>>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AuthorDetailResponse {
+    pub author: Author,
+    pub pages: i32,
+    pub quotes: Vec<Quote>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -83,16 +90,108 @@ struct QuoteListProps {
     quotes: Vec<Quote>,
 }
 
+#[derive(PartialEq, Properties, Clone)]
+struct QuoteCardProps {
+    quote: Quote,
+}
+
+#[derive(Properties, Clone, PartialEq, Deserialize, Serialize)]
+struct AuthorWithQuotesProps {
+    id: String,
+}
+
+#[function_component(AuthorWithQuotes)]
+fn author_with_quotes(props: &AuthorWithQuotesProps) -> Html {
+    let client = reqwest::Client::new();
+    let author = use_state(|| None);
+    let quotes = use_state(|| vec![]);
+    {
+        let author = author.clone();
+        let quotes = quotes.clone();
+        let author_id = props.id.clone();
+        use_effect_with((), move |_| {
+            let author = author.clone();
+            let quotes = quotes.clone();
+            let author_id = author_id.clone();
+
+            wasm_bindgen_futures::spawn_local(async move {
+                log::info!("Fetching author and their quotes from the server...");
+  
+
+                let response = client.get(format!("http://127.0.0.1:3000/api/authors/{}", author_id.clone()))
+                    .header("Content-Type", "application/json")
+                    .send()
+                    .await;
+                log::info!("Author Response received from the server.");
+
+                let parsed_response = match response {
+                    Ok(resp) => match resp.json::<AuthorDetailResponse>().await {
+                        Ok(data) => data,
+                        Err(err) => {
+                            log::error!("Failed to parse response: {}", err);
+                            return;
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("Failed to fetch quotes: {}", err);
+                        return;
+                    }
+                };
+
+                quotes.set(
+                    parsed_response
+                    .quotes
+                    .into_iter()
+                    .collect::<Vec<Quote>>()
+                );
+
+                author.set(
+                    parsed_response
+                    .author
+                    .into()
+                );
+            });
+            || ()
+        });
+    }
+
+    html!{
+        <>
+            <h2>{ format!("Quotes by {}", author.as_ref().map_or("Loading...".to_string(), |a| a.name.clone())) }</h2>
+            <QuoteList quotes={(*quotes).clone()} />
+        </>
+    }
+}
+
+#[function_component(QuoteCard)]
+fn quote_card(QuoteCardProps { quote }: &QuoteCardProps) -> Html {
+    html! {
+        <li class="list-group-item">
+            <figure>
+                <blockquote class="blockquote">
+                    <p>{ &quote.quote}</p>
+                </blockquote>
+                <figcaption class="blockquote-footer">
+                    <Link<Route> to={Route::AuthorDetail { id: quote.author.id.to_string() }}>{ format!("{}", quote.author.name) }</Link<Route>>
+                </figcaption>
+            </figure>
+            <div class="card-footer text-muted">
+                <span class="badge bg-secondary">{"Tags: "}</span>
+                { for quote.related_tags.iter().filter_map(|tag| tag.as_ref()).map(|tag| html! {
+                    <Link<Route> to={Route::TagDetail { id: tag.id.to_string() }} classes="badge bg-primary ms-1">{ &tag.tag }</Link<Route>>
+                }) }
+            </div>
+        </li>
+    }
+}
+
 #[function_component(QuoteList)]
 fn quote_list(QuoteListProps { quotes }: &QuoteListProps) -> Html {
     html! {
         <ul class="list-group">
             { for quotes.iter().map(|quote| html! {
-                <li class="list-group-item">
-                    <Link<Route> to={Route::QuoteDetail { id: quote.id.to_string() }} classes="nav-link">
-                        { format!("{} - {}", quote.id, quote.quote) }
-                    </Link<Route>>
-                </li>
+
+                <QuoteCard quote={quote.clone()} />
             }) }
         </ul>
     }
@@ -159,7 +258,8 @@ fn switch(routes: Route) -> Html {
         Route::Tags => html! { <h1>{"Tags Page"}</h1> },
         Route::TagDetail { id } => html! { <h1>{format!("Tag Detail for ID: {}", id)}</h1> },
         Route::Authors => html! { <h1>{"Authors Page"}</h1> },
-        Route::AuthorDetail { id } => html! { <h1>{format!("Author Detail for ID: {}", id)}</h1> },
+        Route::AuthorDetail { id } =>  
+            html! { <AuthorWithQuotes id={id} /> },
         Route::NotFound => html! { <h1>{"404 Not Found"}</h1> },
     }
 }
